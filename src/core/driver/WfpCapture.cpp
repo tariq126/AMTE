@@ -85,7 +85,8 @@ void NTAPI ClassifyFn(
     bool canWriteAction = false;
     if (classifyOut && (classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
         canWriteAction = true;
-        classifyOut->actionType = FWP_ACTION_PERMIT;
+        // FIX: Must be CONTINUE for Inspection filters!
+        classifyOut->actionType = FWP_ACTION_CONTINUE;
     }
 
     if (!layerData || !g_SharedMemoryKernelBase) return;

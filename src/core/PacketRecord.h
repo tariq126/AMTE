@@ -6,19 +6,19 @@
  * [SharedMemoryHeader] immediately followed by [PacketRecordV1 array]
  */
 
-struct alignas(64) SharedMemoryHeader {
+#pragma pack(push, 1)
+typedef struct _SharedMemoryHeader {
     UINT32 schema_version;
-    UINT32 _pad0; // Align to 8
-    
-    volatile UINT64 head;
-    char pad1[56]; // Prevent false sharing
-
-    volatile UINT64 tail;
-    char pad2[56]; // Prevent false sharing
-
-    UINT64 capacity;
-    UINT64 dropped_packets;
-};
+    UINT32 _pad0;
+    volatile alignas(64) UINT64 head;
+    UINT8 pad1[56];
+    volatile alignas(64) UINT64 tail;
+    UINT8 pad2[56];
+    volatile UINT64 capacity;
+    volatile UINT64 dropped_packets;
+    UINT8 pad3[40]; // FIX: Pads the struct to exactly 192 bytes (64 * 3)
+} SharedMemoryHeader;
+#pragma pack(pop)
 
 // Exactly 64 bytes = 1 CPU Cache Line
 struct alignas(64) PacketRecordV1 {

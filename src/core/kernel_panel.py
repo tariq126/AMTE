@@ -42,9 +42,11 @@ class BlockRuleStruct(ctypes.Structure):
         ("dst_ip", ctypes.c_uint8 * 16),
         ("src_port", ctypes.c_uint16),
         ("dst_port", ctypes.c_uint16),
+        ("_pad0", ctypes.c_uint8 * 2),     # ADDED PADDING
         ("ttl_ms", ctypes.c_uint64),
         ("timestamp_added", ctypes.c_uint64),
-        ("is_active", ctypes.c_long)
+        ("is_active", ctypes.c_long),
+        ("_pad1", ctypes.c_uint8 * 4)      # ADDED PADDING
     ]
 
 _driver_handle = None
