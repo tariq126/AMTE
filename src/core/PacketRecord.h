@@ -16,7 +16,7 @@ typedef struct _SharedMemoryHeader {
     UINT8 pad2[56];
     volatile UINT64 capacity;
     volatile UINT64 dropped_packets;
-    UINT8 pad3[40]; // FIX: Pads the struct to exactly 192 bytes (64 * 3)
+    UINT8 pad3[40]; // FIX: Pads the struct to exactly 192 bytes (64 * 3) to prevent BSOD
 } SharedMemoryHeader;
 #pragma pack(pop)
 

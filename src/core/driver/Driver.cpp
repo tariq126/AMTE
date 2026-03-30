@@ -130,7 +130,8 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
             }
             break;
         }
-        case IOCTL_STOP_CAPTURE: { // FIX: Use the actual calculated macro
+        // FIX: Replaced the hardcoded '0x803' with the calculated macro
+        case IOCTL_STOP_CAPTURE: { 
             if (g_SharedMemoryUserBase && g_SharedMemoryMdl) {
                 MmUnmapLockedPages(g_SharedMemoryUserBase, g_SharedMemoryMdl);
                 g_SharedMemoryUserBase = NULL;
