@@ -189,7 +189,25 @@ def kp_read_batch(shared_mem_buffer):
         # np.concatenate natively incurs a copy, preventing raw memory overlap
         packets = np.concatenate([records_1, records_2])
     
+    # Force a full hardware Memory Barrier (mfence equivalent)
+    # InterlockedOr performs an atomic operation, acting as a full memory fence.
+    dummy = ctypes.c_long(0)
+    kernel32.InterlockedOr(ctypes.byref(dummy), 0)
+    
     # 3. Update the tail value in the SharedMemoryHeader.
     header_arr['tail'][0] = head
     
     return packets
+
+def kp_close_driver():
+    """Safely closes driver handles, triggering driver-side memory unmapping."""
+    global _driver_handle, _packet_event
+    
+    if _packet_event:
+        kernel32.CloseHandle(_packet_event)
+        _packet_event = None
+        
+    if _driver_handle:
+        # Closing this handle triggers EvtFileCleanup in the C++ Driver
+        kernel32.CloseHandle(_driver_handle)
+        _driver_handle = None

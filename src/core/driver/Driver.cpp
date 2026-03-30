@@ -7,6 +7,7 @@
 #include <fwpsk.h>
 #include "Ioctls.h"
 #include "RingBuffer.h"
+#include "BlockEngine.h"
 
 PVOID g_SharedMemoryKernelBase = NULL;
 PMDL g_SharedMemoryMdl = NULL;
@@ -25,7 +26,6 @@ extern "C" EVT_WDF_DRIVER_UNLOAD DriverUnload;
 extern NTSTATUS RegisterWfpCallouts(PDEVICE_OBJECT deviceObject);
 extern NTSTATUS RegisterBfeFilters();
 extern void UnregisterBfeFilters();
-extern void BlockEngine_Init();
 
 PVOID MapSharedMemoryToUserSpace() {
     if (!g_SharedMemoryMdl) return NULL;
@@ -141,7 +141,13 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
             break;
         }
         case IOCTL_ADD_BLOCK_RULE: {
-            status = STATUS_SUCCESS;
+            PVOID inBuffer = NULL;
+            // Retrieve the struct sent by Python
+            status = WdfRequestRetrieveInputBuffer(Request, sizeof(BlockRuleV1), &inBuffer, NULL);
+            if (NT_SUCCESS(status) && inBuffer != NULL) {
+                // Send it to the Block Engine logic
+                status = BlockEngine_AddRule((const BlockRuleV1*)inBuffer);
+            }
             information = 0;
             break;
         }
@@ -152,9 +158,26 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
     WdfRequestCompleteWithInformation(Request, status, information);
 }
 
+VOID EvtFileCleanup(_In_ WDFFILEOBJECT FileObject) {
+    UNREFERENCED_PARAMETER(FileObject);
+    
+    // Automatically unmap if the Python process dies or handle is closed
+    // This prevents a BSOD when the OS attempts to tear down a process with locked MDL pages.
+    if (g_SharedMemoryUserBase && g_SharedMemoryMdl) {
+        MmUnmapLockedPages(g_SharedMemoryUserBase, g_SharedMemoryMdl);
+        g_SharedMemoryUserBase = NULL;
+    }
+}
+
 NTSTATUS InitializeControlDevice(WDFDRIVER Driver) {
     PWDFDEVICE_INIT deviceInit = WdfControlDeviceInitAllocate(Driver, &SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R);
     if (!deviceInit) return STATUS_INSUFFICIENT_RESOURCES;
+
+    // --- NEW CODE: Register File Cleanup ---
+    WDF_FILEOBJECT_CONFIG fileConfig;
+    WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, WDF_NO_EVENT_CALLBACK, WDF_NO_EVENT_CALLBACK, EvtFileCleanup);
+    WdfDeviceInitSetFileObjectConfig(deviceInit, &fileConfig, WDF_NO_OBJECT_ATTRIBUTES);
+    // ---------------------------------------
 
     WdfDeviceInitSetDeviceType(deviceInit, FILE_DEVICE_NETWORK);
     WdfDeviceInitSetCharacteristics(deviceInit, FILE_DEVICE_SECURE_OPEN, FALSE);
