@@ -1,0 +1,193 @@
+import ctypes
+from ctypes import wintypes
+from dataclasses import dataclass
+import numpy as np
+
+# 1. Import header_dtype and packet_dtype from data_contracts.py.
+from data_contracts import header_dtype, packet_dtype
+
+kernel32 = ctypes.windll.kernel32
+
+# Event setup & Map constants
+SYNCHRONIZE = 0x00100000
+
+SEC_AI_DEVICE_TYPE = 40000
+METHOD_BUFFERED = 0
+FILE_ANY_ACCESS = 0
+
+def CTL_CODE(device_type, function, method, access):
+    return (device_type << 16) | (access << 14) | (function << 2) | method
+
+IOCTL_START_CAPTURE = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+IOCTL_ADD_BLOCK_RULE = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+# 4. Define a @dataclass BlockRuleV1
+@dataclass
+class BlockRuleV1:
+    ip_version: int
+    proto: int
+    src_ip: bytes
+    dst_ip: bytes
+    src_port: int
+    dst_port: int
+    ttl_ms: int
+
+# Ctypes analog to directly map over IOCTL inputs
+class BlockRuleStruct(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("ip_version", ctypes.c_uint8),
+        ("proto", ctypes.c_uint8),
+        ("src_ip", ctypes.c_uint8 * 16),
+        ("dst_ip", ctypes.c_uint8 * 16),
+        ("src_port", ctypes.c_uint16),
+        ("dst_port", ctypes.c_uint16),
+        ("ttl_ms", ctypes.c_uint64),
+        ("timestamp_added", ctypes.c_uint64),
+        ("is_active", ctypes.c_long)
+    ]
+
+_driver_handle = None
+_packet_event = None
+_shared_memory_view = None
+
+def kp_init_driver():
+    """Initializes the connection to the kernel driver and maps the event/shared memory."""
+    global _driver_handle, _packet_event, _shared_memory_view
+    
+    _driver_handle = kernel32.CreateFileW(
+        r"\\.\SecAIDriver",
+        0xC0000000, # GENERIC_READ | GENERIC_WRITE
+        0,
+        None,
+        3, # OPEN_EXISTING
+        0x80, # FILE_ATTRIBUTE_NORMAL
+        None
+    )
+    if _driver_handle == wintypes.HANDLE(-1).value:
+        raise Exception("Failed to open driver handle.")
+
+    # 1. Use ctypes to map the named event SecAIPacketEvent.
+    # Note: \BaseNamedObjects namespace naturally maps to Global for user-land processes
+    _packet_event = kernel32.OpenEventW(
+        SYNCHRONIZE,
+        False,
+        r"Global\SecAIPacketEvent"
+    )
+    if not _packet_event:
+        raise Exception("Failed to open SecAIPacketEvent. Is driver running?")
+        
+    # 1. Use ctypes to map the shared memory pointer returned by Driver's IOCTL Memory mapping process
+    out_ptr = ctypes.c_uint64()
+    bytes_returned = wintypes.DWORD()
+    success = kernel32.DeviceIoControl(
+        _driver_handle,
+        IOCTL_START_CAPTURE,
+        None,
+        0,
+        ctypes.byref(out_ptr),
+        ctypes.sizeof(out_ptr),
+        ctypes.byref(bytes_returned),
+        None
+    )
+    if success and out_ptr.value:
+        SHARED_MEMORY_SIZE = 1024 * 1024 * 16
+        buffer_type = ctypes.c_uint8 * SHARED_MEMORY_SIZE
+        raw_buffer = buffer_type.from_address(out_ptr.value)
+        _shared_memory_view = memoryview(raw_buffer)
+    else:
+        raise Exception("Driver failed to map Shared Memory into Process Space.")
+
+
+# 4. Implement kp_add_block_rule(rule: BlockRuleV1) to send rules via DeviceIoControl
+def kp_add_block_rule(rule: BlockRuleV1):
+    if not _driver_handle:
+        raise Exception("Driver not initialized. Call kp_init_driver() first.")
+    
+    struct = BlockRuleStruct()
+    struct.ip_version = rule.ip_version
+    struct.proto = rule.proto
+    
+    for i in range(16):
+        struct.src_ip[i] = rule.src_ip[i] if i < len(rule.src_ip) else 0
+        struct.dst_ip[i] = rule.dst_ip[i] if i < len(rule.dst_ip) else 0
+        
+    struct.src_port = rule.src_port
+    struct.dst_port = rule.dst_port
+    struct.ttl_ms = rule.ttl_ms
+    struct.timestamp_added = 0
+    struct.is_active = 0
+    
+    bytes_returned = wintypes.DWORD()
+    success = kernel32.DeviceIoControl(
+        _driver_handle,
+        IOCTL_ADD_BLOCK_RULE,
+        ctypes.byref(struct),
+        ctypes.sizeof(struct),
+        None,
+        0,
+        ctypes.byref(bytes_returned),
+        None
+    )
+    return bool(success)
+
+# 2. Implement kp_read_batch(shared_mem_buffer).
+def kp_read_batch(shared_mem_buffer):
+    """
+    Reads a batch of packets exclusively from the Ring Buffer SPSC stream lock-free.
+    Avoids copying until parsing exactly the `count` subset.
+    """
+    if not shared_mem_buffer:
+        return np.array([], dtype=packet_dtype)
+
+    mview = memoryview(shared_mem_buffer)
+    header_view = mview[:192]
+    header_arr = np.frombuffer(header_view, dtype=header_dtype)
+    
+    # 3. RING BUFFER LOGIC: Read the SharedMemoryHeader to get head and tail.
+    head = int(header_arr['head'][0])
+    
+    # 3. CRITICAL: Removed MemoryBarrier() as it is not a valid exported function in Python's ctypes kernel32
+    # kernel32.MemoryBarrier() 
+    
+    tail = int(header_arr['tail'][0])
+    capacity = int(header_arr['capacity'][0])
+    
+    if capacity == 0 or head == tail:
+        return np.array([], dtype=packet_dtype)
+    
+    # 3. Compute count = head - tail (handle wrap-around).
+    if head >= tail:
+        count = head - tail
+    else:
+        count = capacity - tail + head
+        
+    packet_array_offset = 192
+    packet_size = 64
+    data_view = mview[packet_array_offset:]
+    
+    # 3. Use memoryview and np.frombuffer to read exactly count items from the PacketRecordV1 array.
+    if head >= tail:
+        start_byte = tail * packet_size
+        end_byte = head * packet_size
+        raw_bytes = data_view[start_byte:end_byte]
+        records = np.frombuffer(raw_bytes, dtype=packet_dtype)
+        packets = np.copy(records) # Copy to avoid asynchronous kernel overwrite corruption while iterating
+    else:
+        start_byte_1 = tail * packet_size
+        end_byte_1 = capacity * packet_size
+        raw_bytes_1 = data_view[start_byte_1:end_byte_1]
+        records_1 = np.frombuffer(raw_bytes_1, dtype=packet_dtype)
+        
+        start_byte_2 = 0
+        end_byte_2 = head * packet_size
+        raw_bytes_2 = data_view[start_byte_2:end_byte_2]
+        records_2 = np.frombuffer(raw_bytes_2, dtype=packet_dtype)
+        
+        # np.concatenate natively incurs a copy, preventing raw memory overlap
+        packets = np.concatenate([records_1, records_2])
+    
+    # 3. Update the tail value in the SharedMemoryHeader.
+    header_arr['tail'][0] = head
+    
+    return packets
