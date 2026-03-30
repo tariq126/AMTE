@@ -20,7 +20,8 @@ extern PVOID g_SharedMemoryKernelBase;
 extern PKEVENT g_PacketEvent;
 
 volatile LONG g_BatchCount = 0;
-LARGE_INTEGER g_LastBatchRunTime = {0};
+// Must be 8-byte aligned for InterlockedExchange64 -- alignment fault = BSOD
+__declspec(align(8)) LARGE_INTEGER g_LastBatchRunTime = {0};
 
 UINT32 calloutIds[4] = {0};
 HANDLE g_EngineHandle = NULL; 
@@ -77,12 +78,14 @@ void NTAPI ClassifyFn(
     UNREFERENCED_PARAMETER(filter);
     UNREFERENCED_PARAMETER(flowContext);
 
+    // Always set a default action FIRST so any early return is safe.
+    // With FWP_ACTION_CALLOUT_INSPECTION this is not strictly required,
+    // but it's critical correctness hygiene -- a missing action with a
+    // TERMINATING callout causes an immediate bug check.
     bool canWriteAction = false;
-    if (classifyOut) {
-        if (classifyOut->rights & FWPS_RIGHT_ACTION_WRITE) {
-            canWriteAction = true;
-            classifyOut->actionType = FWP_ACTION_PERMIT; 
-        }
+    if (classifyOut && (classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
+        canWriteAction = true;
+        classifyOut->actionType = FWP_ACTION_PERMIT;
     }
 
     if (!layerData || !g_SharedMemoryKernelBase) return;
@@ -187,25 +190,61 @@ NTSTATUS RegisterBfeFilters() {
     FWPM_CALLOUT0 mCallout = {0};
     FWPM_FILTER0 filter = {0};
 
+    // --- IPv4 Inbound ---
     mCallout.calloutKey = SEC_AI_CALLOUT_IN_V4;
     mCallout.displayData.name = (wchar_t*)L"SecAI_IN_V4";
     mCallout.applicableLayer = FWPM_LAYER_INBOUND_TRANSPORT_V4;
     FwpmCalloutAdd0(g_EngineHandle, &mCallout, NULL, NULL);
 
+    filter.displayData.name = (wchar_t*)L"SecAI_Filter_IN_V4"; // REQUIRED: NULL name can crash BFE
     filter.layerKey = FWPM_LAYER_INBOUND_TRANSPORT_V4;
-    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING; 
+    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION; // Use INSPECTION, not TERMINATING
     filter.action.calloutKey = SEC_AI_CALLOUT_IN_V4;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
 
+    // --- IPv4 Outbound ---
+    RtlZeroMemory(&mCallout, sizeof(mCallout));
+    RtlZeroMemory(&filter, sizeof(filter));
     mCallout.calloutKey = SEC_AI_CALLOUT_OUT_V4;
     mCallout.displayData.name = (wchar_t*)L"SecAI_OUT_V4";
     mCallout.applicableLayer = FWPM_LAYER_OUTBOUND_TRANSPORT_V4;
     FwpmCalloutAdd0(g_EngineHandle, &mCallout, NULL, NULL);
 
+    filter.displayData.name = (wchar_t*)L"SecAI_Filter_OUT_V4";
     filter.layerKey = FWPM_LAYER_OUTBOUND_TRANSPORT_V4;
-    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;
+    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
     filter.action.calloutKey = SEC_AI_CALLOUT_OUT_V4;
+    filter.weight.type = FWP_EMPTY;
+    FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
+
+    // --- IPv6 Inbound ---
+    RtlZeroMemory(&mCallout, sizeof(mCallout));
+    RtlZeroMemory(&filter, sizeof(filter));
+    mCallout.calloutKey = SEC_AI_CALLOUT_IN_V6;
+    mCallout.displayData.name = (wchar_t*)L"SecAI_IN_V6";
+    mCallout.applicableLayer = FWPM_LAYER_INBOUND_TRANSPORT_V6;
+    FwpmCalloutAdd0(g_EngineHandle, &mCallout, NULL, NULL);
+
+    filter.displayData.name = (wchar_t*)L"SecAI_Filter_IN_V6";
+    filter.layerKey = FWPM_LAYER_INBOUND_TRANSPORT_V6;
+    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
+    filter.action.calloutKey = SEC_AI_CALLOUT_IN_V6;
+    filter.weight.type = FWP_EMPTY;
+    FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
+
+    // --- IPv6 Outbound ---
+    RtlZeroMemory(&mCallout, sizeof(mCallout));
+    RtlZeroMemory(&filter, sizeof(filter));
+    mCallout.calloutKey = SEC_AI_CALLOUT_OUT_V6;
+    mCallout.displayData.name = (wchar_t*)L"SecAI_OUT_V6";
+    mCallout.applicableLayer = FWPM_LAYER_OUTBOUND_TRANSPORT_V6;
+    FwpmCalloutAdd0(g_EngineHandle, &mCallout, NULL, NULL);
+
+    filter.displayData.name = (wchar_t*)L"SecAI_Filter_OUT_V6";
+    filter.layerKey = FWPM_LAYER_OUTBOUND_TRANSPORT_V6;
+    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
+    filter.action.calloutKey = SEC_AI_CALLOUT_OUT_V6;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
 

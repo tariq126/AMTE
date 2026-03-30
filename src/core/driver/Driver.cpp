@@ -73,8 +73,22 @@ NTSTATUS InitializePacketEvent() {
 
 VOID DriverUnload(_In_ WDFDRIVER Driver) {
     UNREFERENCED_PARAMETER(Driver);
+
+    // STEP 1: Remove BFE filters so no new ClassifyFn calls are dispatched
     UnregisterBfeFilters();
 
+    // STEP 2: Unregister WFP callouts and WAIT for all in-flight ClassifyFn
+    //         calls to fully drain. This MUST happen before freeing shared
+    //         memory, otherwise a racing ClassifyFn will write to freed
+    //         memory -> BSOD (bug check 0xD1 or 0x50).
+    for (int i = 0; i < 4; i++) {
+        if (calloutIds[i] != 0) {
+            FwpsCalloutUnregisterById0(calloutIds[i]);
+            calloutIds[i] = 0;
+        }
+    }
+
+    // STEP 3: Now safe to free shared memory -- no callout can touch it
     if (g_SharedMemoryMdl) {
         MmFreePagesFromMdl(g_SharedMemoryMdl);
         IoFreeMdl(g_SharedMemoryMdl);
@@ -82,17 +96,11 @@ VOID DriverUnload(_In_ WDFDRIVER Driver) {
         g_SharedMemoryKernelBase = NULL;
     }
 
+    // STEP 4: Close event handle
     if (g_PacketEventHandle) {
         ZwClose(g_PacketEventHandle);
         g_PacketEventHandle = NULL;
         g_PacketEvent = NULL;
-    }
-
-    for (int i = 0; i < 4; i++) {
-        if (calloutIds[i] != 0) {
-            FwpsCalloutUnregisterById0(calloutIds[i]); 
-            calloutIds[i] = 0;
-        }
     }
 }
 
