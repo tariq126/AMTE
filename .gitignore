@@ -22,3 +22,12 @@ __pycache__/
 # OS generated files
 .DS_Store
 Thumbs.db
+.vs/
+
+x64/
+Debug/
+Release/
+ARM64/
+*.pdb
+*.ilk
+*.obj
