@@ -82,8 +82,11 @@ void NTAPI ClassifyFn(
     bool canWriteAction = false;
     if (classifyOut && (classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
         canWriteAction = true;
-        // FIX: Inspection filters MUST default to CONTINUE. Returning PERMIT is illegal.
-        classifyOut->actionType = FWP_ACTION_CONTINUE; 
+        
+        // CRITICAL FIX: Because this is now a TERMINATING filter, we MUST default to PERMIT.
+        // We intentionally do NOT clear the FWPS_RIGHT_ACTION_WRITE flag here. 
+        // This allows lower-priority filters (like Windows Defender Firewall) to still block the packet if they need to.
+        classifyOut->actionType = FWP_ACTION_PERMIT; 
     }
 
     if (!layerData || !g_SharedMemoryKernelBase) return;
