@@ -106,11 +106,17 @@ void NTAPI ClassifyFn(
     pkt.wire_len = (mss > 0 && mss < packetLength) ? mss : packetLength;
     pkt.captured_len = pkt.wire_len;
 
-    UCHAR safeBuffer[64];
-    PVOID pData = NdisGetDataBuffer(nb, sizeof(safeBuffer), safeBuffer, 1, 0);
-    if (pData) {
-        PUCHAR buffer = (PUCHAR)pData;
-        pkt.tcp_flags = buffer[13];
+    // CRITICAL FIX: At the WFP TRANSPORT layer, the IP header is stripped.
+    // The data points directly to the TCP/UDP header.
+    // We must ensure the packet is at least 20 bytes before reading TCP flags at offset 13.
+    pkt.tcp_flags = 0;
+    if (packetLength >= 20 && pkt.proto == 6) { // 6 = IPPROTO_TCP
+        UCHAR safeBuffer[20];
+        PVOID pData = NdisGetDataBuffer(nb, sizeof(safeBuffer), safeBuffer, 1, 0);
+        if (pData) {
+            PUCHAR buffer = (PUCHAR)pData;
+            pkt.tcp_flags = buffer[13];
+        }
     }
 
     if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4 || 
@@ -199,7 +205,7 @@ NTSTATUS RegisterBfeFilters() {
 
     filter.displayData.name = (wchar_t*)L"SecAI_Filter_IN_V4"; // REQUIRED: NULL name can crash BFE
     filter.layerKey = FWPM_LAYER_INBOUND_TRANSPORT_V4;
-    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION; // Use INSPECTION, not TERMINATING
+    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING; // Change from INSPECTION
     filter.action.calloutKey = SEC_AI_CALLOUT_IN_V4;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
@@ -214,7 +220,7 @@ NTSTATUS RegisterBfeFilters() {
 
     filter.displayData.name = (wchar_t*)L"SecAI_Filter_OUT_V4";
     filter.layerKey = FWPM_LAYER_OUTBOUND_TRANSPORT_V4;
-    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
+    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING; // Change from INSPECTION
     filter.action.calloutKey = SEC_AI_CALLOUT_OUT_V4;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
@@ -229,7 +235,7 @@ NTSTATUS RegisterBfeFilters() {
 
     filter.displayData.name = (wchar_t*)L"SecAI_Filter_IN_V6";
     filter.layerKey = FWPM_LAYER_INBOUND_TRANSPORT_V6;
-    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
+    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING; // Change from INSPECTION
     filter.action.calloutKey = SEC_AI_CALLOUT_IN_V6;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);
@@ -244,7 +250,7 @@ NTSTATUS RegisterBfeFilters() {
 
     filter.displayData.name = (wchar_t*)L"SecAI_Filter_OUT_V6";
     filter.layerKey = FWPM_LAYER_OUTBOUND_TRANSPORT_V6;
-    filter.action.type = FWP_ACTION_CALLOUT_INSPECTION;
+    filter.action.type = FWP_ACTION_CALLOUT_TERMINATING; // Change from INSPECTION
     filter.action.calloutKey = SEC_AI_CALLOUT_OUT_V6;
     filter.weight.type = FWP_EMPTY;
     FwpmFilterAdd0(g_EngineHandle, &filter, NULL, NULL);

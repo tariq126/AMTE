@@ -161,12 +161,10 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
 VOID EvtFileCleanup(_In_ WDFFILEOBJECT FileObject) {
     UNREFERENCED_PARAMETER(FileObject);
     
-    // Automatically unmap if the Python process dies or handle is closed
-    // This prevents a BSOD when the OS attempts to tear down a process with locked MDL pages.
-    if (g_SharedMemoryUserBase && g_SharedMemoryMdl) {
-        MmUnmapLockedPages(g_SharedMemoryUserBase, g_SharedMemoryMdl);
-        g_SharedMemoryUserBase = NULL;
-    }
+    // CRITICAL FIX: Do NOT call MmUnmapLockedPages here!
+    // When CMD closes, the OS destroys the page tables automatically.
+    // Manually unmapping a dead process context causes an immediate BSOD.
+    g_SharedMemoryUserBase = NULL; 
 }
 
 NTSTATUS InitializeControlDevice(WDFDRIVER Driver) {
