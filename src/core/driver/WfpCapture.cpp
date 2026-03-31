@@ -36,7 +36,6 @@ extern "C" void NTAPI ClassifyFn(
     const FWPS_INCOMING_VALUES0* inFixedValues,
     const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
     void* layerData,
-    const void* classifyContext,
     const FWPS_FILTER0* filter,
     UINT64 flowContext,
     FWPS_CLASSIFY_OUT0* classifyOut
@@ -68,13 +67,11 @@ void NTAPI ClassifyFn(
     const FWPS_INCOMING_VALUES0* inFixedValues,
     const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
     void* layerData,
-    const void* classifyContext,
     const FWPS_FILTER0* filter,
     UINT64 flowContext,
     FWPS_CLASSIFY_OUT0* classifyOut
 ) {
     UNREFERENCED_PARAMETER(inMetaValues);
-    UNREFERENCED_PARAMETER(classifyContext);
     UNREFERENCED_PARAMETER(filter);
     UNREFERENCED_PARAMETER(flowContext);
 
@@ -119,18 +116,23 @@ void NTAPI ClassifyFn(
         }
     }
 
-    if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4 || 
-        inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V6) {
-        pkt.direction = 1; 
-    } else {
-        pkt.direction = 0; 
-    }
-    
-    if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4 || 
-        inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V4) {
+    // Safely determine IP version, direction, and protocol from WFP metadata
+    if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4) {
         pkt.ip_version = 4;
-    } else {
+        pkt.direction = 1;
+        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
+    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V4) {
+        pkt.ip_version = 4;
+        pkt.direction = 0;
+        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
+    } else if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V6) {
         pkt.ip_version = 6;
+        pkt.direction = 1;
+        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
+    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V6) {
+        pkt.ip_version = 6;
+        pkt.direction = 0;
+        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
     }
 
     SharedMemoryHeader* header = (SharedMemoryHeader*)g_SharedMemoryKernelBase;
