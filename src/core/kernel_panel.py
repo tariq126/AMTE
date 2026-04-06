@@ -52,10 +52,11 @@ class BlockRuleStruct(ctypes.Structure):
 _driver_handle = None
 _packet_event = None
 _shared_memory_view = None
+_raw_buffer = None  # CRITICAL FIX 3.3: Keep the ctypes buffer alive — prevents GC from freeing the shared memory mapping
 
 def kp_init_driver():
     """Initializes the connection to the kernel driver and maps the event/shared memory."""
-    global _driver_handle, _packet_event, _shared_memory_view
+    global _driver_handle, _packet_event, _shared_memory_view, _raw_buffer
     
     _driver_handle = kernel32.CreateFileW(
         r"\\.\SecAIDriver",
@@ -95,8 +96,11 @@ def kp_init_driver():
     if success and out_ptr.value:
         SHARED_MEMORY_SIZE = 1024 * 1024 * 16
         buffer_type = ctypes.c_uint8 * SHARED_MEMORY_SIZE
-        raw_buffer = buffer_type.from_address(out_ptr.value)
-        _shared_memory_view = memoryview(raw_buffer)
+        # CRITICAL FIX 3.3: Store in the module-level global so Python's GC never collects it.
+        # If this were a local variable it would be freed when kp_init_driver() returns,
+        # leaving _shared_memory_view as a dangling memoryview that reads zeros.
+        _raw_buffer = buffer_type.from_address(out_ptr.value)
+        _shared_memory_view = memoryview(_raw_buffer)
     else:
         raise Exception("Driver failed to map Shared Memory into Process Space.")
 
@@ -149,8 +153,12 @@ def kp_read_batch(shared_mem_buffer):
     # 3. RING BUFFER LOGIC: Read the SharedMemoryHeader to get head and tail.
     head = int(header_arr['head'][0])
     
-    # 3. CRITICAL: Removed MemoryBarrier() as it is not a valid exported function in Python's ctypes kernel32
-    # kernel32.MemoryBarrier() 
+    # CRITICAL FIX 2.3: Issue a full memory barrier BEFORE reading tail.
+    # Without this, the CPU can reorder the head/tail reads, making head==tail
+    # look true on multi-core even when the kernel has already pushed packets.
+    # InterlockedOr(0) is a no-op atomically, but forces an mfence-equivalent.
+    dummy = ctypes.c_long(0)
+    kernel32.InterlockedOr(ctypes.byref(dummy), 0)
     
     tail = int(header_arr['tail'][0])
     capacity = int(header_arr['capacity'][0])
@@ -189,13 +197,14 @@ def kp_read_batch(shared_mem_buffer):
         # np.concatenate natively incurs a copy, preventing raw memory overlap
         packets = np.concatenate([records_1, records_2])
     
-    # Force a full hardware Memory Barrier (mfence equivalent)
-    # InterlockedOr performs an atomic operation, acting as a full memory fence.
-    dummy = ctypes.c_long(0)
+    # Force a full hardware Memory Barrier (mfence equivalent) after reading, before writing tail.
     kernel32.InterlockedOr(ctypes.byref(dummy), 0)
     
-    # 3. Update the tail value in the SharedMemoryHeader.
-    header_arr['tail'][0] = head
+    # CRITICAL FIX 2.1: np.frombuffer() always returns a READ-ONLY array.
+    # Writing to header_arr['tail'] directly would raise ValueError at runtime.
+    # Instead, we write directly through the underlying ctypes buffer at the
+    # exact byte offset of the 'tail' field (offset 72, per data_contracts.py).
+    ctypes.c_uint64.from_buffer(_raw_buffer, 72).value = head
     
     return packets
 

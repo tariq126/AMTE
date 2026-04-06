@@ -106,9 +106,46 @@ void NTAPI ClassifyFn(
     pkt.wire_len = (mss > 0 && mss < packetLength) ? mss : packetLength;
     pkt.captured_len = pkt.wire_len;
 
-    // CRITICAL FIX: At the WFP TRANSPORT layer, the IP header is stripped.
-    // The data points directly to the TCP/UDP header.
-    // We must ensure the packet is at least 20 bytes before reading TCP flags at offset 13.
+    // CRITICAL FIX 1.1 & 7.1: Extract protocol, IPs, and ports FIRST.
+    // The old code checked pkt.proto == 6 for TCP flags BEFORE pkt.proto was assigned,
+    // so tcp_flags was always 0. Additionally, src/dst IP and port were never populated at all.
+    if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4) {
+        pkt.ip_version = 4; pkt.direction = 1;
+        pkt.proto   = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
+        pkt.src_port = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_REMOTE_PORT].value.uint16;
+        pkt.dst_port = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_LOCAL_PORT].value.uint16;
+        // WFP delivers IPv4 addresses in host-byte order; swap to network-byte order for Python
+        UINT32 srcIp = RtlUlongByteSwap(inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_REMOTE_ADDRESS].value.uint32);
+        UINT32 dstIp = RtlUlongByteSwap(inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_LOCAL_ADDRESS].value.uint32);
+        RtlCopyMemory(pkt.src_ip, &srcIp, 4);
+        RtlCopyMemory(pkt.dst_ip, &dstIp, 4);
+    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V4) {
+        pkt.ip_version = 4; pkt.direction = 0;
+        pkt.proto   = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
+        pkt.src_port = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_LOCAL_PORT].value.uint16;
+        pkt.dst_port = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_REMOTE_PORT].value.uint16;
+        UINT32 srcIp = RtlUlongByteSwap(inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_LOCAL_ADDRESS].value.uint32);
+        UINT32 dstIp = RtlUlongByteSwap(inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_REMOTE_ADDRESS].value.uint32);
+        RtlCopyMemory(pkt.src_ip, &srcIp, 4);
+        RtlCopyMemory(pkt.dst_ip, &dstIp, 4);
+    } else if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V6) {
+        pkt.ip_version = 6; pkt.direction = 1;
+        pkt.proto   = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
+        pkt.src_port = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_REMOTE_PORT].value.uint16;
+        pkt.dst_port = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_LOCAL_PORT].value.uint16;
+        // IPv6 addresses from WFP are already in network-byte order
+        RtlCopyMemory(pkt.src_ip, inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_REMOTE_ADDRESS].value.byteArray16->byteArray16, 16);
+        RtlCopyMemory(pkt.dst_ip, inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_LOCAL_ADDRESS].value.byteArray16->byteArray16, 16);
+    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V6) {
+        pkt.ip_version = 6; pkt.direction = 0;
+        pkt.proto   = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
+        pkt.src_port = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_LOCAL_PORT].value.uint16;
+        pkt.dst_port = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_REMOTE_PORT].value.uint16;
+        RtlCopyMemory(pkt.src_ip, inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_LOCAL_ADDRESS].value.byteArray16->byteArray16, 16);
+        RtlCopyMemory(pkt.dst_ip, inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_REMOTE_ADDRESS].value.byteArray16->byteArray16, 16);
+    }
+
+    // Now that pkt.proto is correctly populated, TCP flag extraction will work.
     pkt.tcp_flags = 0;
     if (packetLength >= 20 && pkt.proto == 6) { // 6 = IPPROTO_TCP
         UCHAR safeBuffer[20];
@@ -117,25 +154,6 @@ void NTAPI ClassifyFn(
             PUCHAR buffer = (PUCHAR)pData;
             pkt.tcp_flags = buffer[13];
         }
-    }
-
-    // Safely determine IP version, direction, and protocol from WFP metadata
-    if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V4) {
-        pkt.ip_version = 4;
-        pkt.direction = 1;
-        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
-    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V4) {
-        pkt.ip_version = 4;
-        pkt.direction = 0;
-        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V4_IP_PROTOCOL].value.uint8;
-    } else if (inFixedValues->layerId == FWPS_LAYER_INBOUND_TRANSPORT_V6) {
-        pkt.ip_version = 6;
-        pkt.direction = 1;
-        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_INBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
-    } else if (inFixedValues->layerId == FWPS_LAYER_OUTBOUND_TRANSPORT_V6) {
-        pkt.ip_version = 6;
-        pkt.direction = 0;
-        pkt.proto = inFixedValues->incomingValue[FWPS_FIELD_OUTBOUND_TRANSPORT_V6_IP_PROTOCOL].value.uint8;
     }
 
     SharedMemoryHeader* header = (SharedMemoryHeader*)g_SharedMemoryKernelBase;

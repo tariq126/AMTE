@@ -1,10 +1,12 @@
 import time
 import sys
 import os
+import numpy as np
 
 # Tell Python where your API lives
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src', 'core'))
 import kernel_panel as kp
+from data_contracts import header_dtype
 
 def test_packet_streaming():
     print("\n[--- TEST 1: KERNEL TO PYTHON STREAMING ---]")
@@ -15,13 +17,18 @@ def test_packet_streaming():
     
     # Run a 5-second test capture
     while time.time() - start_time < 5.0:
-        import numpy as np
         mview = memoryview(kp._shared_memory_view)
         header_view = mview[:192]
-        from data_contracts import header_dtype
-        header_arr = np.frombuffer(header_view, dtype=header_dtype)
-        if total_caught == 0 and int(time.time() * 10) % 10 == 0:
-             print(f"    [DEBUG] Head: {header_arr['head'][0]}, Tail: {header_arr['tail'][0]}, Capacity: {header_arr['capacity'][0]}, Dropped/Hits: {header_arr['dropped_packets'][0]}")
+        header_arr = np.frombuffer(bytes(header_view), dtype=header_dtype)
+
+        # CRITICAL FIX 1.2: Always print debug while no packets received yet.
+        # Use end='\r' to overwrite the same line so the output doesn't flood the terminal.
+        if total_caught == 0:
+            head    = header_arr['head'][0]
+            tail    = header_arr['tail'][0]
+            cap     = header_arr['capacity'][0]
+            dropped = header_arr['dropped_packets'][0]
+            print(f"    [DEBUG] Head: {head}, Tail: {tail}, Capacity: {cap}, Dropped: {dropped}", end="\r")
 
         batch = kp.kp_read_batch(kp._shared_memory_view)
         if batch is not None and len(batch) > 0:
