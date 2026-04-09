@@ -174,13 +174,20 @@ void NTAPI ClassifyFn(
     LONG currentCount = InterlockedIncrement(&g_BatchCount);
     LARGE_INTEGER currentTime;
     KeQuerySystemTime(&currentTime);
-    
-    LONGLONG elapsed = currentTime.QuadPart - g_LastBatchRunTime.QuadPart;
-    
+
+    // ATOMIC READ: InterlockedCompareExchange64 is the standard WDK idiom for an
+    // atomic 64-bit read on ALL architectures including x86, where a plain
+    // LONGLONG read at DISPATCH_LEVEL on multi-core is NOT guaranteed to be atomic.
+    // Comperand=0, Exchange=0: only swaps if the current value is 0 (initial state),
+    // which is harmless. In all other cases it is a pure read with no side-effects.
+    LONGLONG lastRunTime = InterlockedCompareExchange64(
+        (volatile LONGLONG*)&g_LastBatchRunTime.QuadPart, 0LL, 0LL);
+    LONGLONG elapsed = currentTime.QuadPart - lastRunTime;
+
     if (currentCount >= 1024 || elapsed >= 50000) {
-        if (g_PacketEvent) KeSetEvent(g_PacketEvent, 0, FALSE); 
+        if (g_PacketEvent) KeSetEvent(g_PacketEvent, 0, FALSE);
         InterlockedExchange(&g_BatchCount, 0);
-        InterlockedExchange64(&g_LastBatchRunTime.QuadPart, currentTime.QuadPart); 
+        InterlockedExchange64(&g_LastBatchRunTime.QuadPart, currentTime.QuadPart);
     }
 }
 
@@ -193,14 +200,21 @@ NTSTATUS RegisterWfpCallouts(PDEVICE_OBJECT deviceObject) {
     callout.flowDeleteFn = NULL;
 
     NTSTATUS status;
+
+    // Guard each registration individually. On early return, calloutIds[i] for any
+    // failed registration stays 0. DriverUnload already checks != 0 before
+    // unregistering, so partial registration is safely cleaned up at unload.
     callout.calloutKey = SEC_AI_CALLOUT_IN_V4;
     status = FwpsCalloutRegister0(deviceObject, &callout, &calloutIds[0]);
+    if (!NT_SUCCESS(status)) return status;
 
     callout.calloutKey = SEC_AI_CALLOUT_OUT_V4;
     status = FwpsCalloutRegister0(deviceObject, &callout, &calloutIds[1]);
+    if (!NT_SUCCESS(status)) return status;
 
     callout.calloutKey = SEC_AI_CALLOUT_IN_V6;
     status = FwpsCalloutRegister0(deviceObject, &callout, &calloutIds[2]);
+    if (!NT_SUCCESS(status)) return status;
 
     callout.calloutKey = SEC_AI_CALLOUT_OUT_V6;
     status = FwpsCalloutRegister0(deviceObject, &callout, &calloutIds[3]);

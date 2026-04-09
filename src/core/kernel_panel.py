@@ -8,6 +8,18 @@ from data_contracts import header_dtype, packet_dtype
 
 kernel32 = ctypes.windll.kernel32
 
+# --- restype declarations ---
+# ctypes defaults all return values to c_int (32-bit). On x64 Windows, HANDLE
+# is a 64-bit value. Without these declarations, any handle with high bits set
+# would be silently truncated, corrupting the handle and causing all subsequent
+# API calls to fail with confusing errors instead of the clean guard checks below.
+kernel32.CreateFileW.restype           = wintypes.HANDLE
+kernel32.OpenEventW.restype            = wintypes.HANDLE
+kernel32.CloseHandle.restype           = wintypes.BOOL
+kernel32.DeviceIoControl.restype       = wintypes.BOOL
+kernel32.FlushProcessWriteBuffers.restype = None   # void return
+# ----------------------------
+
 # Event setup & Map constants
 SYNCHRONIZE = 0x00100000
 
@@ -156,9 +168,9 @@ def kp_read_batch(shared_mem_buffer):
     # CRITICAL FIX 2.3: Issue a full memory barrier BEFORE reading tail.
     # Without this, the CPU can reorder the head/tail reads, making head==tail
     # look true on multi-core even when the kernel has already pushed packets.
-    # InterlockedOr(0) is a no-op atomically, but forces an mfence-equivalent.
-    dummy = ctypes.c_long(0)
-    kernel32.InterlockedOr(ctypes.byref(dummy), 0)
+    # FlushProcessWriteBuffers() is a documented kernel32.dll export (Vista+) that
+    # sends an IPI to all cores, acting as a full hardware memory barrier (mfence-equivalent).
+    kernel32.FlushProcessWriteBuffers()
     
     tail = int(header_arr['tail'][0])
     capacity = int(header_arr['capacity'][0])
@@ -198,7 +210,7 @@ def kp_read_batch(shared_mem_buffer):
         packets = np.concatenate([records_1, records_2])
     
     # Force a full hardware Memory Barrier (mfence equivalent) after reading, before writing tail.
-    kernel32.InterlockedOr(ctypes.byref(dummy), 0)
+    kernel32.FlushProcessWriteBuffers()
     
     # CRITICAL FIX 2.1: np.frombuffer() always returns a READ-ONLY array.
     # Writing to header_arr['tail'] directly would raise ValueError at runtime.
