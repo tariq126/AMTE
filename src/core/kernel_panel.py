@@ -30,8 +30,12 @@ FILE_ANY_ACCESS = 0
 def CTL_CODE(device_type, function, method, access):
     return (device_type << 16) | (access << 14) | (function << 2) | method
 
-IOCTL_START_CAPTURE = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
-IOCTL_ADD_BLOCK_RULE = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+IOCTL_START_CAPTURE     = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+IOCTL_ADD_BLOCK_RULE    = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+IOCTL_GET_BLOCK_RULES   = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+IOCTL_REMOVE_BLOCK_RULE = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+# NOTE: IOCTL_STOP_CAPTURE was moved to 0x806 in the C++ driver to free 0x803.
+IOCTL_STOP_CAPTURE      = CTL_CODE(SEC_AI_DEVICE_TYPE, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 # 4. Define a @dataclass BlockRuleV1
 @dataclass
@@ -148,6 +152,105 @@ def kp_add_block_rule(rule: BlockRuleV1):
         None
     )
     return bool(success)
+
+
+def kp_get_active_rules() -> list:
+    """
+    Fetches the array of active BlockRules from the C++ driver via
+    IOCTL_GET_BLOCK_RULES (0x803).
+
+    The driver performs a lock-free snapshot of g_BlockRules[], writing only
+    the is_active == 1 entries into the output buffer, and returns the exact
+    byte count via the BytesReturned out-parameter.  We use that count to
+    know how many BlockRuleStruct entries to deserialise -- no sentinel
+    scanning needed.
+
+    Returns a list of dicts:
+        [{"proto": int, "dst_port": int, "ttl_ms": int}, ...]
+    Returns [] on any error (driver not open, IOCTL failure, empty table).
+    """
+    if not _driver_handle:
+        return []
+
+    # Allocate exactly MAX_BLOCK_RULES entries -- this matches the C++ driver's
+    # required minimum output buffer size (sizeof(BlockRuleV1) * 1024).
+    buffer_type = BlockRuleStruct * 1024
+    out_buffer   = buffer_type()
+    bytes_returned = wintypes.DWORD()
+
+    success = kernel32.DeviceIoControl(
+        _driver_handle,
+        IOCTL_GET_BLOCK_RULES,
+        None, 0,                          # no input buffer
+        ctypes.byref(out_buffer),
+        ctypes.sizeof(out_buffer),        # must be >= sizeof(BlockRuleV1)*1024
+        ctypes.byref(bytes_returned),
+        None
+    )
+
+    if not success:
+        err = kernel32.GetLastError()
+        # Silently return empty list; caller can log err if needed
+        _ = err  # suppress lint; set a breakpoint here to inspect
+        return []
+
+    # The driver sets BytesReturned = ruleCount * sizeof(BlockRuleV1), so we
+    # divide back to get the exact live rule count without scanning the array.
+    struct_size = ctypes.sizeof(BlockRuleStruct)
+    rule_count  = bytes_returned.value // struct_size
+
+    rules = []
+    for i in range(rule_count):
+        s = out_buffer[i]
+        rules.append({
+            "proto":    s.proto,
+            "src_port": s.src_port,
+            "dst_port": s.dst_port,
+            "ttl_ms":   s.ttl_ms,
+        })
+    return rules
+
+
+def kp_remove_block_rule(target_port: int) -> bool:
+    """
+    Tells the C++ driver to atomically deactivate the first active rule
+    whose dst_port matches target_port (IOCTL_REMOVE_BLOCK_RULE, 0x804).
+
+    The driver uses InterlockedCompareExchange to set is_active 1->0,
+    so this is safe to call while the WFP ClassifyFn is running on other
+    cores.
+
+    Args:
+        target_port: destination port (uint16).  Must be 1-65535;
+                     the driver rejects 0 with STATUS_INVALID_PARAMETER.
+
+    Returns True if the driver confirmed the rule was found and removed.
+    Returns False on any failure, including:
+        - Driver not initialised
+        - target_port out of range
+        - No matching active rule  (C++ returns STATUS_NOT_FOUND = 0xC0000225,
+          which DeviceIoControl translates to Win32 error 1168 ERROR_NOT_FOUND)
+    """
+    if not _driver_handle:
+        return False
+    if not (1 <= target_port <= 65535):
+        return False
+
+    # Pass the port as a plain 16-bit little-endian integer -- exactly what
+    # the driver reads with *(UINT16*)inBuffer.
+    port_c = ctypes.c_uint16(target_port)
+    bytes_returned = wintypes.DWORD()
+
+    success = kernel32.DeviceIoControl(
+        _driver_handle,
+        IOCTL_REMOVE_BLOCK_RULE,
+        ctypes.byref(port_c), ctypes.sizeof(port_c),  # 2-byte input
+        None, 0,                                       # no output buffer
+        ctypes.byref(bytes_returned),
+        None
+    )
+    return bool(success)
+
 
 # 2. Implement kp_read_batch(shared_mem_buffer).
 def kp_read_batch(shared_mem_buffer):

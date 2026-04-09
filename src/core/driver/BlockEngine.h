@@ -1,4 +1,6 @@
 #pragma once
+
+#define MAX_BLOCK_RULES 1024
 #include <ntddk.h>
 #ifndef NDIS61
 #define NDIS61 1
@@ -32,3 +34,13 @@ NTSTATUS BlockEngine_AddRule(const BlockRuleV1* newRule);
 
 // ClassifyFn evaluation hook
 bool ShouldBlockPacket(const PacketRecordV1* pkt);
+
+// Copies all is_active == 1 rules into outBuffer (which must hold at least
+// outCapacity entries).  Returns the number of rules written.
+ULONG BlockEngine_GetRules(_Out_writes_(outCapacity) BlockRuleV1* outBuffer,
+                           _In_ ULONG outCapacity);
+
+// Atomically deactivates the first active rule whose dst_port matches.
+// Returns STATUS_SUCCESS if a rule was found and deactivated,
+// STATUS_NOT_FOUND otherwise.
+NTSTATUS BlockEngine_RemoveRule(_In_ UINT16 dstPort);

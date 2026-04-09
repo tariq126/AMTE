@@ -106,7 +106,7 @@ VOID DriverUnload(_In_ WDFDRIVER Driver) {
 
 VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_t OutputBufferLength, _In_ size_t InputBufferLength, _In_ ULONG IoControlCode) {
     UNREFERENCED_PARAMETER(Queue);
-    UNREFERENCED_PARAMETER(InputBufferLength);
+    // InputBufferLength is used by IOCTL_REMOVE_BLOCK_RULE -- do NOT mark unreferenced
     NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
     ULONG_PTR information = 0;
 
@@ -130,7 +130,7 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
             }
             break;
         }
-        // FIX: Replaced the hardcoded '0x803' with the calculated macro
+        // IOCTL_STOP_CAPTURE moved to 0x806 to make room for IOCTL_GET_BLOCK_RULES at 0x803
         case IOCTL_STOP_CAPTURE: { 
             if (g_SharedMemoryUserBase && g_SharedMemoryMdl) {
                 MmUnmapLockedPages(g_SharedMemoryUserBase, g_SharedMemoryMdl);
@@ -148,6 +148,54 @@ VOID EvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request, _In_ size_
                 // Send it to the Block Engine logic
                 status = BlockEngine_AddRule((const BlockRuleV1*)inBuffer);
             }
+            information = 0;
+            break;
+        }
+        // ----------------------------------------------------------------
+        // IOCTL_GET_BLOCK_RULES  (0x803)
+        // Returns all currently-active BlockRuleV1 entries to user-mode.
+        // The output buffer must be large enough for MAX_BLOCK_RULES entries;
+        // Python should pass ctypes.sizeof(BlockRuleStruct) * 1024 bytes.
+        // ----------------------------------------------------------------
+        case IOCTL_GET_BLOCK_RULES: {
+            const ULONG requiredOut = sizeof(BlockRuleV1) * MAX_BLOCK_RULES;
+            if (OutputBufferLength < requiredOut) {
+                status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            PVOID outBuffer = NULL;
+            status = WdfRequestRetrieveOutputBuffer(
+                Request, requiredOut, &outBuffer, NULL);
+            if (!NT_SUCCESS(status) || !outBuffer) break;
+
+            // Safe: outBuffer is a non-paged WDF-managed I/O buffer;
+            // BlockEngine_GetRules performs only kernel-mode reads.
+            ULONG ruleCount = BlockEngine_GetRules(
+                (BlockRuleV1*)outBuffer, MAX_BLOCK_RULES);
+
+            // Tell I/O manager exactly how many bytes to copy back
+            // to user-mode (one entry per active rule, not the whole array).
+            information = (ULONG_PTR)(ruleCount * sizeof(BlockRuleV1));
+            status = STATUS_SUCCESS;
+            break;
+        }
+        // ----------------------------------------------------------------
+        // IOCTL_REMOVE_BLOCK_RULE  (0x804)
+        // Receives a UINT16 dst_port from Python and atomically deactivates
+        // the first matching active rule.
+        // ----------------------------------------------------------------
+        case IOCTL_REMOVE_BLOCK_RULE: {
+            if (InputBufferLength < sizeof(UINT16)) {
+                status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            PVOID inBuffer = NULL;
+            status = WdfRequestRetrieveInputBuffer(
+                Request, sizeof(UINT16), &inBuffer, NULL);
+            if (!NT_SUCCESS(status) || !inBuffer) break;
+
+            UINT16 dstPort = *(UINT16*)inBuffer;
+            status = BlockEngine_RemoveRule(dstPort);
             information = 0;
             break;
         }
