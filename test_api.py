@@ -17,17 +17,10 @@ def test_packet_streaming():
     
     # Run a 5-second test capture
     while time.time() - start_time < 5.0:
-        mview = memoryview(kp._shared_memory_view)
-        header_view = mview[:192]
-        header_arr = np.frombuffer(bytes(header_view), dtype=header_dtype)
-
         # CRITICAL FIX 1.2: Always print debug while no packets received yet.
         # Use end='\r' to overwrite the same line so the output doesn't flood the terminal.
         if total_caught == 0:
-            head    = header_arr['head'][0]
-            tail    = header_arr['tail'][0]
-            cap     = header_arr['capacity'][0]
-            dropped = header_arr['dropped_packets'][0]
+            head, tail, cap, dropped = kp.kp_get_metrics()
             print(f"    [DEBUG] Head: {head}, Tail: {tail}, Capacity: {cap}, Dropped: {dropped}", end="\r")
 
         batch = kp.kp_read_batch(kp._shared_memory_view)

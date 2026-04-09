@@ -220,6 +220,25 @@ def kp_read_batch(shared_mem_buffer):
     
     return packets
 
+def kp_get_metrics():
+    """
+    Safely reads the Shared Memory Header and returns current metrics.
+    Returns: tuple (head, tail, capacity, dropped_packets)
+    """
+    if not _shared_memory_view:
+        return (0, 0, 0, 0)
+        
+    mview = memoryview(_shared_memory_view)
+    header_view = mview[:192]
+    header_arr = np.frombuffer(header_view, dtype=header_dtype)
+    
+    return (
+        int(header_arr['head'][0]),
+        int(header_arr['tail'][0]),
+        int(header_arr['capacity'][0]),
+        int(header_arr['dropped_packets'][0])
+    )
+
 def kp_close_driver():
     """Safely closes driver handles, triggering driver-side memory unmapping."""
     global _driver_handle, _packet_event
