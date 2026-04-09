@@ -12,7 +12,6 @@ from datetime import datetime
 _CORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src', 'core')
 sys.path.append(_CORE)
 import kernel_panel as kp
-from data_contracts import header_dtype
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
