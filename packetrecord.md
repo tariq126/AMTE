@@ -108,10 +108,11 @@ Initiates the standard payload configuration. Forces the overall allocated bound
 Standard precision timestamp marking precisely when WFP delivered the event intercept down to the exact nanosecond integer.
 
 ```cpp
-    UINT32 schema_version;
+    UINT16 schema_version;
+    UINT16 tcp_window;
     UINT32 if_index;
 ```
-Tracks the version control map per execution payload alongside tracking exactly what hardware Network Interface Controller (if_index) executed the transaction.
+Tracks the version control map per execution payload (reduced to 16 bits to maintain alignment), captures the TCP window size via `tcp_window`, alongside tracking exactly what hardware Network Interface Controller (if_index) executed the transaction.
 
 ```cpp
     UINT32 captured_len;

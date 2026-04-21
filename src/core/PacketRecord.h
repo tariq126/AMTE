@@ -27,7 +27,8 @@ static_assert(sizeof(SharedMemoryHeader) == 192, "SharedMemoryHeader MUST be exa
 // Exactly 64 bytes = 1 CPU Cache Line
 struct alignas(64) PacketRecordV1 {
     UINT64 mono_ts_ns;
-    UINT32 schema_version;
+    UINT16 schema_version;
+    UINT16 tcp_window;
     UINT32 if_index;
     UINT32 captured_len;
     UINT32 wire_len;

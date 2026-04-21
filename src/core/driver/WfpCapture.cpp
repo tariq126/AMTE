@@ -147,12 +147,14 @@ void NTAPI ClassifyFn(
 
     // Now that pkt.proto is correctly populated, TCP flag extraction will work.
     pkt.tcp_flags = 0;
+    pkt.tcp_window = 0;
     if (packetLength >= 20 && pkt.proto == 6) { // 6 = IPPROTO_TCP
         UCHAR safeBuffer[20];
         PVOID pData = NdisGetDataBuffer(nb, sizeof(safeBuffer), safeBuffer, 1, 0);
         if (pData) {
             PUCHAR buffer = (PUCHAR)pData;
             pkt.tcp_flags = buffer[13];
+            pkt.tcp_window = RtlUshortByteSwap(*(UINT16*)(buffer + 14));
         }
     }
 

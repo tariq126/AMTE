@@ -80,7 +80,7 @@ Begins constructing the layout representing a single individual intercepted netw
 
 ```python
     'names': [
-        'mono_ts_ns', 'schema_version', 'if_index', 'captured_len',
+        'mono_ts_ns', 'schema_version', 'tcp_window', 'if_index', 'captured_len',
         'wire_len', 'src_port', 'dst_port', 'direction', 'ip_version',
         'proto', 'tcp_flags', 'src_ip', 'dst_ip'
     ],
@@ -89,7 +89,7 @@ Defines the dictionary string names mirroring the exact `PacketRecordV1` variabl
 
 ```python
     'formats': [
-        np.uint64, np.uint32, np.uint32, np.uint32,
+        np.uint64, np.uint16, np.uint16, np.uint32, np.uint32,
         np.uint32, np.uint16, np.uint16, np.uint8, np.uint8,
         np.uint8, np.uint8, (np.uint8, 16), (np.uint8, 16)
     ],
@@ -98,7 +98,7 @@ Establishes the primitive memory lengths mapping against `PacketRecord.h`. For t
 
 ```python
     'offsets': [
-        0, 8, 12, 16,
+        0, 8, 10, 12, 16,
         20, 24, 26, 28, 29,
         30, 31, 32, 48
     ],
